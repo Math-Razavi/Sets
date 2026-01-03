@@ -1,0 +1,418 @@
+
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ماشین حساب مجموعه‌ها </title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, sans-serif;
+            background-color: #f3f4f6;
+            text-align: center;
+            padding: 20px;
+            color: #333;
+        }
+
+        .container {
+            max-width: 750px;
+            margin: 0 auto;
+            background: white;
+            padding: 30px;
+            border-radius: 20px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+        }
+
+        canvas {
+            cursor: pointer;
+            max-width: 100%;
+            height: auto;
+            margin: 15px 0;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .result-box {
+            margin-top: 25px;
+            padding: 20px;
+            background: #e3f2fd;
+            border: 2px solid #2196f3;
+            border-radius: 12px;
+            min-height: 90px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .formula {
+            font-family: 'Times New Roman', serif;
+            font-size: 2.2rem;
+            color: #0d47a1;
+            direction: ltr;
+            font-weight: bold;
+            line-height: 1.4;
+        }
+
+        .label {
+            font-size: 0.9rem;
+            color: #555;
+            margin-bottom: 5px;
+        }
+
+        button {
+            background-color: #f44336;
+            color: white;
+            border: none;
+            padding: 10px 30px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1rem;
+            margin-top: 20px;
+            transition: 0.2s;
+        }
+
+        button:hover {
+            background-color: #d32f2f;
+        }
+
+        #loading {
+            color: #1976d2;
+            font-weight: bold;
+            display: none;
+            margin-bottom: 15px;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="container">
+        <h2 style="margin-top:0;">آنالیزگر مجموعه‌ها</h2>
+        <p style="color:#666; font-size:0.9rem;">کاری از مرتضی پوردولت. دبیر ریاضی مدارس سمپاد متوسطه اول شهر مشهد . برای نمایش هر قسمت روی آن ناحیه کلیک کنید  </p>
+
+        <div id="loading">در حال محاسبه ساختار درختی فرمول‌ها...</div>
+
+        <canvas id="vennCanvas" width="500" height="420"></canvas>
+
+        <div class="result-box">
+            <span class="label">رابطه ریاضی دقیق:</span>
+            <span class="formula" id="formula-display">∅</span>
+        </div>
+
+        <button onclick="reset()">پاک‌سازی</button>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('vennCanvas');
+        const ctx = canvas.getContext('2d');
+        const display = document.getElementById('formula-display');
+        const loadingMsg = document.getElementById('loading');
+
+        const R = 100;
+        const circles = {
+            A: {
+                x: 180,
+                y: 170,
+                color: [229, 57, 53]
+            },
+            B: {
+                x: 320,
+                y: 170,
+                color: [25, 118, 210]
+            },
+            C: {
+                x: 250,
+                y: 290,
+                color: [56, 142, 60]
+            }
+        };
+
+        let currentMask = 0;
+        let formulaDB = {};
+
+        const TYPE = {
+            ATOM: 0,
+            OP: 1
+        }; // ساده‌سازی تایپ‌ها: یا اتم است یا عملیات
+
+        // -------------------------------------------------------------------------
+        // === موتور تولید فرمول (Strict Logic) ===
+        // -------------------------------------------------------------------------
+        function initMathEngine() {
+            loadingMsg.style.display = 'block';
+
+            const MASKS = {
+                A: (1 << 0) | (1 << 2) | (1 << 4) | (1 << 6),
+                B: (1 << 1) | (1 << 2) | (1 << 5) | (1 << 6),
+                C: (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6)
+            };
+
+            let queue = [];
+
+            const register = (mask, str, type) => {
+                // همچنان کوتاه‌ترین را انتخاب می‌کنیم، اما چون پرانتز اجباری است
+                // خودبه‌خود ساختارهای ساده‌تر انتخاب می‌شوند.
+                if (!formulaDB[mask] || str.length < formulaDB[mask].str.length) {
+                    formulaDB[mask] = {
+                        str: str,
+                        type: type
+                    };
+                    return true;
+                }
+                return false;
+            };
+
+            // سطح 0 و 1
+            register(0, "∅", TYPE.ATOM);
+            let inputs = [{
+                    m: MASKS.A,
+                    s: "A",
+                    t: TYPE.ATOM
+                },
+                {
+                    m: MASKS.B,
+                    s: "B",
+                    t: TYPE.ATOM
+                },
+                {
+                    m: MASKS.C,
+                    s: "C",
+                    t: TYPE.ATOM
+                }
+            ];
+
+            inputs.forEach(item => {
+                register(item.m, item.s, item.t);
+                queue.push(item);
+            });
+
+            // === تابع فرمت‌دهی سخت‌گیرانه ===
+            // اگر فرزند اتم نیست (یعنی خودش یک عملیات است)، حتما پرانتز می‌گیرد.
+            const format = (childStr, childType) => {
+                if (childType !== TYPE.ATOM) return `(${childStr})`;
+                return childStr;
+            };
+
+            let head = 0;
+            const LIMIT = 4000;
+
+            while (head < queue.length && head < LIMIT) {
+                let i1 = queue[head++];
+
+                // ترکیب با تعداد محدودی از صف برای سرعت
+                for (let j = 0; j < queue.length; j++) {
+                    if (j > 300) break;
+                    let i2 = queue[j];
+
+                    if (i1.m === i2.m) continue;
+
+                    // 1. اجتماع (Union)
+                    let uM = i1.m | i2.m;
+                    // مرتب‌سازی الفبایی برای ثبات
+                    let [uLeft, uRight] = i1.s < i2.s ? [i1, i2] : [i2, i1];
+                    let uStr = `${format(uLeft.s, uLeft.t)} ∪ ${format(uRight.s, uRight.t)}`;
+                    if (register(uM, uStr, TYPE.OP)) queue.push({
+                        m: uM,
+                        s: uStr,
+                        t: TYPE.OP
+                    });
+
+                    // 2. اشتراک (Intersect)
+                    let iM = i1.m & i2.m;
+                    if (iM !== 0) {
+                        let [iLeft, iRight] = i1.s < i2.s ? [i1, i2] : [i2, i1];
+                        let iStr = `${format(iLeft.s, iLeft.t)} ∩ ${format(iRight.s, iRight.t)}`;
+                        if (register(iM, iStr, TYPE.OP)) queue.push({
+                            m: iM,
+                            s: iStr,
+                            t: TYPE.OP
+                        });
+                    }
+
+                    // 3. تفاضل (Diff)
+                    let dM = i1.m & (~i2.m);
+                    if (dM !== 0) {
+                        let dStr = `${format(i1.s, i1.t)} - ${format(i2.s, i2.t)}`;
+                        if (register(dM, dStr, TYPE.OP)) queue.push({
+                            m: dM,
+                            s: dStr,
+                            t: TYPE.OP
+                        });
+                    }
+                }
+            }
+
+            fillGaps();
+            loadingMsg.style.display = 'none';
+        }
+
+        function fillGaps() {
+            // برای حالت‌های بسیار پیچیده که پیدا نشدند
+            // فرمول‌های اتمیک هم باید پرانتز داشته باشند چون ترکیبی هستند
+            const atoms = [
+                "(A - (B ∪ C))",
+                "(B - (A ∪ C))",
+                "((A ∩ B) - C)", // اضافه کردن پرانتز دقیق
+                "(C - (A ∪ B))",
+                "((A ∩ C) - B)",
+                "((B ∩ C) - A)",
+                "((A ∩ B) ∩ C)"
+            ];
+
+            for (let i = 1; i < 128; i++) {
+                if (!formulaDB[i]) {
+                    let parts = [];
+                    for (let bit = 0; bit < 7; bit++) {
+                        if ((i >> bit) & 1) parts.push(atoms[bit]);
+                    }
+                    // اتصال با اجتماع، اینجا هم پرانتز دور تک تک اجزا هست، پس فقط U بینشان می‌آید
+                    formulaDB[i] = {
+                        str: parts.join(" ∪ "),
+                        type: TYPE.OP
+                    };
+                }
+            }
+        }
+
+        // -------------------------------------------------------------------------
+        // === تعامل ===
+        // -------------------------------------------------------------------------
+
+        initMathEngine();
+        draw();
+
+        canvas.addEventListener('mousedown', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            const x = (e.clientX - rect.left) * scaleX;
+            const y = (e.clientY - rect.top) * scaleY;
+
+            const idx = getAtomIndex(x, y);
+            if (idx !== -1) {
+                currentMask ^= (1 << idx);
+                draw();
+                updateResult();
+            }
+        });
+
+        function updateResult() {
+            if (formulaDB[currentMask]) {
+                display.innerHTML = formulaDB[currentMask].str;
+            } else {
+                display.innerHTML = "...";
+            }
+        }
+
+        function reset() {
+            currentMask = 0;
+            draw();
+            updateResult();
+        }
+
+        function getAtomIndex(x, y) {
+            const R2 = R * R;
+            const inA = (x - circles.A.x) ** 2 + (y - circles.A.y) ** 2 <= R2;
+            const inB = (x - circles.B.x) ** 2 + (y - circles.B.y) ** 2 <= R2;
+            const inC = (x - circles.C.x) ** 2 + (y - circles.C.y) ** 2 <= R2;
+
+            if (!inA && !inB && !inC) return -1;
+            if (inA && !inB && !inC) return 0;
+            if (!inA && inB && !inC) return 1;
+            if (inA && inB && !inC) return 2;
+            if (!inA && !inB && inC) return 3;
+            if (inA && !inB && inC) return 4;
+            if (!inA && inB && inC) return 5;
+            if (inA && inB && inC) return 6;
+            return -1;
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            const imgData = ctx.createImageData(canvas.width, canvas.height);
+            const data = imgData.data;
+            const R2 = R * R;
+
+            for (let y = 0; y < canvas.height; y++) {
+                for (let x = 0; x < canvas.width; x++) {
+                    const da = (x - circles.A.x) ** 2 + (y - circles.A.y) ** 2;
+                    const db = (x - circles.B.x) ** 2 + (y - circles.B.y) ** 2;
+                    const dc = (x - circles.C.x) ** 2 + (y - circles.C.y) ** 2;
+
+                    const inA = da <= R2;
+                    const inB = db <= R2;
+                    const inC = dc <= R2;
+
+                    if (!inA && !inB && !inC) continue;
+
+                    let idx = -1;
+                    if (inA && !inB && !inC) idx = 0;
+                    else if (!inA && inB && !inC) idx = 1;
+                    else if (inA && inB && !inC) idx = 2;
+                    else if (!inA && !inB && inC) idx = 3;
+                    else if (inA && !inB && inC) idx = 4;
+                    else if (!inA && inB && inC) idx = 5;
+                    else if (inA && inB && inC) idx = 6;
+
+                    const index = (y * canvas.width + x) * 4;
+                    const isSelected = (currentMask >> idx) & 1;
+
+                    const border = 1300;
+                    const isBorder = Math.abs(da - R2) < border || Math.abs(db - R2) < border || Math.abs(dc - R2) < border;
+
+                    if (isBorder) {
+                        data[index] = 100;
+                        data[index + 1] = 100;
+                        data[index + 2] = 100;
+                        data[index + 3] = 255;
+                    } else if (isSelected) {
+                        let r = 0,
+                            g = 0,
+                            b = 0,
+                            n = 0;
+                        if (inA) {
+                            r += circles.A.color[0];
+                            g += circles.A.color[1];
+                            b += circles.A.color[2];
+                            n++;
+                        }
+                        if (inB) {
+                            r += circles.B.color[0];
+                            g += circles.B.color[1];
+                            b += circles.B.color[2];
+                            n++;
+                        }
+                        if (inC) {
+                            r += circles.C.color[0];
+                            g += circles.C.color[1];
+                            b += circles.C.color[2];
+                            n++;
+                        }
+
+                        data[index] = r / n;
+                        data[index + 1] = g / n;
+                        data[index + 2] = b / n;
+                        data[index + 3] = 210;
+                    } else {
+                        data[index] = 248;
+                        data[index + 1] = 248;
+                        data[index + 2] = 248;
+                        data[index + 3] = 255;
+                    }
+                }
+            }
+            ctx.putImageData(imgData, 0, 0);
+
+            ctx.font = "bold 22px Times New Roman";
+            ctx.fillStyle = "#333";
+            ctx.fillText("A", circles.A.x - 90, circles.A.y - 50);
+            ctx.fillText("B", circles.B.x + 100, circles.B.y - 50);
+            ctx.fillText("C", circles.C.x, circles.C.y + 120);
+        }
+    </script>
+
+</body>
+
+</html>
